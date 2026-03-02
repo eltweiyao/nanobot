@@ -5,7 +5,7 @@ import asyncio
 from nanobot.bus.events import InboundMessage, OutboundMessage
 
 
-class MessageBus:
+class womMessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
 

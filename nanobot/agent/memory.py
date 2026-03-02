@@ -13,6 +13,7 @@ from nanobot.utils.helpers import ensure_dir
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
     from nanobot.session.manager import Session
+    from nanobot.agent.vector_memory import VectorMemoryStore
 
 
 _SAVE_MEMORY_TOOL = [
@@ -31,8 +32,14 @@ _SAVE_MEMORY_TOOL = [
                     },
                     "memory_update": {
                         "type": "string",
-                        "description": "Full updated long-term memory as markdown. Include all existing "
-                        "facts plus new ones. Return unchanged if nothing new.",
+                        "description": "Full updated core long-term memory (PROFILE) as markdown. "
+                        "Include all existing core facts plus new ones. Return unchanged if nothing new.",
+                    },
+                    "facts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of NEW atomic, self-contained factual snippets or user preferences "
+                        "extracted from this conversation (e.g. 'User lives in Paris', 'User has a dog named Rex').",
                     },
                 },
                 "required": ["history_entry", "memory_update"],
@@ -43,7 +50,7 @@ _SAVE_MEMORY_TOOL = [
 
 
 class MemoryStore:
-    """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
+    """Two-layer memory: MEMORY.md (core profile) + HISTORY.md (grep-searchable log) + Vector (Atomic facts)."""
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
@@ -64,7 +71,7 @@ class MemoryStore:
 
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()
-        return f"## Long-term Memory\n{long_term}" if long_term else ""
+        return f"## Core Profile\n{long_term}" if long_term else ""
 
     async def consolidate(
         self,
@@ -74,8 +81,10 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         memory_window: int = 50,
+        user_id: int | None = None,
+        vector_store: VectorMemoryStore | None = None,
     ) -> bool:
-        """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
+        """Consolidate old messages into MEMORY.md + HISTORY.md + Vector DB via LLM tool call.
 
         Returns True on success (including no-op), False on failure.
         """
@@ -104,7 +113,12 @@ class MemoryStore:
         current_memory = self.read_long_term()
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
 
-## Current Long-term Memory
+Extract:
+1. A brief summary for the history log.
+2. Updates to the core user profile (MEMORY.md). Keep this section small and focused on critical facts.
+3. A list of NEW atomic, self-contained facts or user preferences to store in a vector database for later retrieval.
+
+## Current Core Profile (MEMORY.md)
 {current_memory or "(empty)"}
 
 ## Conversation to Process
@@ -141,6 +155,12 @@ class MemoryStore:
                     update = json.dumps(update, ensure_ascii=False)
                 if update != current_memory:
                     self.write_long_term(update)
+            
+            # Save atomic facts to vector store
+            if user_id and vector_store and (facts := args.get("facts")):
+                for fact in facts:
+                    if isinstance(fact, str) and fact.strip():
+                        await vector_store.add_memory(user_id, fact)
 
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
             logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)

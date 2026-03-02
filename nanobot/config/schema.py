@@ -320,6 +320,25 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class DatabaseConfig(Base):
+    """PostgreSQL database configuration."""
+
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 5432
+    user: str = "postgres"
+    password: str = ""
+    database: str = "nanobot"
+
+
+class VectorMemoryConfig(Base):
+    """Vector memory configuration."""
+
+    enabled: bool = False
+    embedding_model: str = "text-embedding-v3"
+    top_k: int = 5
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -328,6 +347,8 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    vector_memory: VectorMemoryConfig = Field(default_factory=VectorMemoryConfig)
 
     @property
     def workspace_path(self) -> Path:

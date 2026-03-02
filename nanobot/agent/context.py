@@ -10,6 +10,7 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.agent.vector_memory import VectorMemoryStore
 
 
 class ContextBuilder:
@@ -18,12 +19,18 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, vector_memory_store: VectorMemoryStore | None = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self.vector_memory = vector_memory_store
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    async def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        user_id: int | None = None,
+        query: str | None = None,
+    ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -31,9 +38,15 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
+        # Vector memories (Per-user RAG)
+        if self.vector_memory and user_id and query:
+            memories = await self.vector_memory.search_memories(user_id, query)
+            if memories:
+                parts.append("# Relevant Memories\n\n" + "\n".join(f"- {m}" for m in memories))
+
         memory = self.memory.get_memory_context()
         if memory:
-            parts.append(f"# Memory\n\n{memory}")
+            parts.append(f"# Global Memory\n\n{memory}")
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -102,7 +115,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         
         return "\n\n".join(parts) if parts else ""
     
-    def build_messages(
+    async def build_messages(
         self,
         history: list[dict[str, Any]],
         current_message: str,
@@ -110,10 +123,16 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
+        system_prompt = await self.build_system_prompt(
+            skill_names=skill_names,
+            user_id=user_id,
+            query=current_message,
+        )
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": system_prompt},
             *history,
             {"role": "user", "content": self._build_runtime_context(channel, chat_id)},
             {"role": "user", "content": self._build_user_content(current_message, media)},

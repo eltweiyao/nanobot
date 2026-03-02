@@ -256,6 +256,8 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.utils.db import DatabaseManager
+    from nanobot.agent.vector_memory import VectorMemoryStore
     
     if verbose:
         import logging
@@ -265,6 +267,21 @@ def gateway(
     
     config = load_config()
     sync_workspace_templates(config.workspace_path)
+
+    # Database and Vector Memory
+    db = DatabaseManager(config)
+    vector_memory = None
+    if config.vector_memory.enabled:
+        dashscope_key = config.providers.dashscope.api_key
+        if dashscope_key:
+            vector_memory = VectorMemoryStore(
+                db=db,
+                api_key=dashscope_key,
+                model=config.vector_memory.embedding_model
+            )
+        else:
+            console.print("[yellow]Warning: Vector memory enabled but DashScope API key not found.[/yellow]")
+
     bus = MessageBus()
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
@@ -291,6 +308,8 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        database_manager=db,
+        vector_memory_store=vector_memory,
     )
     
     # Set cron callback (needs agent)
@@ -379,6 +398,7 @@ def gateway(
     
     async def run():
         try:
+            await db.connect()
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
@@ -388,6 +408,7 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            await db.close()
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()
@@ -424,6 +445,20 @@ def agent(
     bus = MessageBus()
     provider = _make_provider(config)
 
+    # Database and Vector Memory
+    db = DatabaseManager(config)
+    vector_memory = None
+    if config.vector_memory.enabled:
+        dashscope_key = config.providers.dashscope.api_key
+        if dashscope_key:
+            vector_memory = VectorMemoryStore(
+                db=db,
+                api_key=dashscope_key,
+                model=config.vector_memory.embedding_model
+            )
+        else:
+            logger.warning("Vector memory enabled but DashScope API key not found.")
+
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
@@ -449,6 +484,8 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        database_manager=db,
+        vector_memory_store=vector_memory,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -470,10 +507,12 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
+            await db.connect()
             with _thinking_ctx():
                 response = await agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
             _print_agent_response(response, render_markdown=markdown)
             await agent_loop.close_mcp()
+            await db.close()
 
         asyncio.run(run_once())
     else:
@@ -495,6 +534,7 @@ def agent(
         signal.signal(signal.SIGINT, _exit_on_sigint)
 
         async def run_interactive():
+            await db.connect()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -569,6 +609,7 @@ def agent(
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
+                await db.close()
 
         asyncio.run(run_interactive())
 

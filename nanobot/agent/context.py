@@ -30,7 +30,7 @@ class ContextBuilder:
         self.vector_memory = None
         if vector_memory and vector_memory.enabled:
             self.vector_memory = VectorMemoryStore(
-                db_url=vector_memory.database_url,
+                db_url=vector_memory.db_url,
                 provider=provider,
                 embedding_model=vector_memory.embedding_model,
                 embedding_api_key=vector_memory.embedding_api_key,

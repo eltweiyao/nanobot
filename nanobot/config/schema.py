@@ -307,7 +307,7 @@ class VectorMemoryConfig(Base):
     """Memory configuration for pgvector-based storage."""
 
     enabled: bool = False
-    database_url: str = "postgresql://postgres@localhost:5432/nanobot"
+    db_url: str = "postgresql://postgres@localhost:5432/nanobot"
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_api_base: str | None = None

@@ -304,8 +304,8 @@ class LiteLLMProvider(LLMProvider):
         # Resolve model name for embeddings too (e.g. for gateways)
         resolved_model = self._resolve_model(model)
         
-        kwargs: dict[str, Any] = {"model": resolved_model, "input": [text], "api_key": api_key or self.api_key,
-                                  "api_base": api_base or self.api_base}
+        kwargs: dict[str, Any] = {"model": resolved_model, "input": [text], "encoding_format": "float",
+                                  "api_key": api_key or self.api_key, "api_base": api_base or self.api_base}
 
         # Priority: explicit override > instance default
 

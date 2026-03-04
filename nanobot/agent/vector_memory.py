@@ -136,8 +136,7 @@ class VectorMemoryStore:
                 prefix = f"[{m['category']}]"
                 formatted.append(f"{prefix} {m['content']}")
                 
-            return "
-".join(formatted)
+            return "".join(formatted)
             
         except Exception as e:
             logger.error(f"Error querying memories: {e}")

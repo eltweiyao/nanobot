@@ -42,7 +42,7 @@ class VectorMemoryStore:
                             user_id VARCHAR(255) NOT NULL,
                             session_id VARCHAR(255),
                             content TEXT NOT NULL,
-                            embedding VECTOR(1536),
+                            embedding VECTOR(1024),
                             category VARCHAR(50) DEFAULT 'fact',
                             importance FLOAT DEFAULT 1.0,
                             metadata JSONB,

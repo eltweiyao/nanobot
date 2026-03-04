@@ -277,7 +277,6 @@ def gateway(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        config=config,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
         max_tokens=config.agents.defaults.max_tokens,
@@ -293,6 +292,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        vector_memory=config.vector_memory,
     )
 
     # Set cron callback (needs agent)
@@ -462,7 +462,6 @@ def agent(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
-        config=config,
         model=config.agents.defaults.model,
         temperature=config.agents.defaults.temperature,
         max_tokens=config.agents.defaults.max_tokens,
@@ -477,6 +476,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        vector_memory=config.vector_memory,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on

@@ -11,6 +11,7 @@ from typing import Any
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.vector_memory import VectorMemoryStore
+from nanobot.config.schema import VectorMemoryConfig
 from nanobot.providers.base import LLMProvider
 
 
@@ -20,25 +21,24 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path, config: Any = None, provider: LLMProvider = None):
+    def __init__(self, workspace: Path, vector_memory: VectorMemoryConfig = None, provider: LLMProvider = None):
         self.workspace = workspace
-        self.config = config
         self.provider = provider
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         
         self.vector_memory = None
-        if config and config.memory.enabled:
+        if vector_memory and vector_memory.enabled:
             self.vector_memory = VectorMemoryStore(
-                db_url=config.memory.database_url,
+                db_url=vector_memory.database_url,
                 provider=provider,
-                embedding_model=config.memory.embedding_model,
-                embedding_api_key=config.memory.embedding_api_key,
-                embedding_api_base=config.memory.embedding_api_base
+                embedding_model=vector_memory.embedding_model,
+                embedding_api_key=vector_memory.embedding_api_key,
+                embedding_api_base=vector_memory.embedding_api_base
             )
 
 
-    async def build_system_prompt(self, skill_names: list[str] | None = None, query: str | None = None, session_id: str | None = None, user_id: str = "default") -> str:
+    async def build_system_prompt(self, query: str | None = None, session_id: str | None = None, user_id: str = "default") -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -46,7 +46,7 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        if self.vector_memory and query:
+        if self.vector_memory:
             # Semantic search from pgvector
             memory = await self.vector_memory.query_relevant_memories(
                 user_id=user_id,
@@ -151,7 +151,6 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         # For pgvector: user_id = channel, session_id = chat_id
         # This provides both cross-session user memory and per-session focus.
         system_prompt = await self.build_system_prompt(
-            skill_names=skill_names,
             query=current_message,
             session_id=chat_id,
             user_id=channel or "default"

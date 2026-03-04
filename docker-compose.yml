@@ -10,6 +10,8 @@ services:
     container_name: nanobot-gateway
     <<: *common-config
     command: ["gateway"]
+    environment:
+      - TZ=Asia/Shanghai
     restart: unless-stopped
     ports:
       - 18790:18790

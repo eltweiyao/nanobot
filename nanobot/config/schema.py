@@ -303,7 +303,7 @@ class ExecToolConfig(Base):
     path_append: str = ""
 
 
-class MemoryConfig(Base):
+class VectorMemoryConfig(Base):
     """Memory configuration for pgvector-based storage."""
 
     enabled: bool = False
@@ -341,7 +341,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    vector_memory: VectorMemoryConfig = Field(default_factory=VectorMemoryConfig)
 
     @property
     def workspace_path(self) -> Path:

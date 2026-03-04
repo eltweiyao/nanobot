@@ -125,6 +125,19 @@ class MochatGroupRule(Base):
     require_mention: bool = False
 
 
+
+class WecomConfig(Base):
+    """WeCom (Enterprise WeChat) channel configuration."""
+
+    enabled: bool = False
+    corp_id: str = ""  # 企业 ID
+    agent_id: int = 0  # 应用 ID
+    secret: str = ""  # 应用 Secret
+    token: str = ""  # 回调验证 Token
+    encoding_aes_key: str = ""  # 消息加密密钥
+    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
+
+
 class MochatConfig(Base):
     """Mochat channel configuration."""
 
@@ -211,6 +224,7 @@ class ChannelsConfig(Base):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     mochat: MochatConfig = Field(default_factory=MochatConfig)
     dingtalk: DingTalkConfig = Field(default_factory=DingTalkConfig)
+    wecom: WecomConfig = Field(default_factory=WecomConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)

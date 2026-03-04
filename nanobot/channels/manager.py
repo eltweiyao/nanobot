@@ -103,6 +103,17 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("DingTalk channel not available: {}", e)
 
+        # WeCom channel
+        if self.config.channels.wecom.enabled:
+            try:
+                from nanobot.channels.wecom import WecomChannel
+                self.channels["wecom"] = WecomChannel(
+                    self.config.channels.wecom, self.bus
+                )
+                logger.info("WeCom channel enabled")
+            except ImportError as e:
+                logger.warning("WeCom channel not available: {}", e)
+
         # Email channel
         if self.config.channels.email.enabled:
             try:
@@ -175,6 +186,17 @@ class ChannelManager:
         # Start outbound dispatcher
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
 
+        # Start WeCom callback server if WeCom is enabled
+        wecom_callback_task = None
+        if "wecom" in self.channels:
+            try:
+                from nanobot.channels.wecom_callback import WecomCallbackServer
+                wecom_server = WecomCallbackServer(self.channels["wecom"], port=18790)
+                wecom_callback_task = asyncio.create_task(wecom_server.start())
+                logger.info("WeCom callback server started on port 18790")
+            except Exception as e:
+                logger.warning("Failed to start WeCom callback server: {}", e)
+
         # Start channels
         tasks = []
         for name, channel in self.channels.items():
@@ -182,6 +204,8 @@ class ChannelManager:
             tasks.append(asyncio.create_task(self._start_channel(name, channel)))
 
         # Wait for all to complete (they should run forever)
+        if wecom_callback_task:
+            tasks.append(wecom_callback_task)
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def stop_all(self) -> None:

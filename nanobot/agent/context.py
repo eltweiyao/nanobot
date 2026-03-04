@@ -33,8 +33,8 @@ class ContextBuilder:
                 db_url=config.memory.database_url,
                 provider=provider,
                 embedding_model=config.memory.embedding_model,
-                api_key=config.memory.embedding_api_key,
-                api_base=config.memory.embedding_api_base
+                embedding_api_key=config.memory.embedding_api_key,
+                embedding_api_base=config.memory.embedding_api_base
             )
 
 

@@ -158,6 +158,7 @@ Call 'save_atomic_memories' with your findings.
                     {"role": "user", "content": prompt},
                 ],
                 tools=_SAVE_MEMORY_TOOL,
+                tool_choice=tool_choice,
                 model=model,
             )
 

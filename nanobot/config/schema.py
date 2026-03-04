@@ -303,6 +303,16 @@ class ExecToolConfig(Base):
     path_append: str = ""
 
 
+class MemoryConfig(Base):
+    """Memory configuration for pgvector-based storage."""
+
+    enabled: bool = False
+    database_url: str = "postgresql://postgres@localhost:5432/nanobot"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str | None = None
+    embedding_api_base: str | None = None
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -331,6 +341,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     @property
     def workspace_path(self) -> Path:

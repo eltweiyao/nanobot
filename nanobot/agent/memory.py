@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -38,6 +38,31 @@ _SAVE_MEMORY_TOOL = [
                 "required": ["history_entry", "memory_update"],
             },
         },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_atomic_memories",
+            "description": "Save extracted atomic facts and preferences to vector memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memories": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "The fact or preference text."},
+                                "category": {"type": "string", "enum": ["fact", "preference", "task"], "description": "The type of memory."},
+                                "importance": {"type": "number", "minimum": 0, "maximum": 1, "description": "Subjective importance (0-1)."}
+                            },
+                            "required": ["content", "category"]
+                        }
+                    }
+                },
+                "required": ["memories"]
+            }
+        }
     }
 ]
 
@@ -74,10 +99,14 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         memory_window: int = 50,
+        vector_store: Any = None,
+        user_id: str = "default",
+        session_id: str | None = None,
     ) -> bool:
-        """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
+        """Consolidate old messages into persistent memory via LLM tool call.
 
-        Returns True on success (including no-op), False on failure.
+        If vector_store is provided, it extracts atomic facts. Otherwise, it updates MEMORY.md.
+        Returns True on success, False on failure.
         """
         if archive_all:
             old_messages = session.messages
@@ -101,19 +130,31 @@ class MemoryStore:
             tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
 
-        current_memory = self.read_long_term()
-        prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
+        if vector_store:
+            # Vector-based consolidation (Atomic Facts)
+            prompt = f"""Process this conversation and extract new atomic facts or user preferences.
+Focus on information that is worth remembering long-term.
+Call 'save_atomic_memories' with your findings.
+
+## Conversation to Process
+{chr(10).join(lines)}"""
+            tool_choice = {"type": "function", "function": {"name": "save_atomic_memories"}}
+        else:
+            # File-based consolidation (Markdown)
+            current_memory = self.read_long_term()
+            prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
 
 ## Current Long-term Memory
 {current_memory or "(empty)"}
 
 ## Conversation to Process
 {chr(10).join(lines)}"""
+            tool_choice = {"type": "function", "function": {"name": "save_memory"}}
 
         try:
             response = await provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
+                    {"role": "system", "content": "You are a memory consolidation agent."},
                     {"role": "user", "content": prompt},
                 ],
                 tools=_SAVE_MEMORY_TOOL,
@@ -121,29 +162,34 @@ class MemoryStore:
             )
 
             if not response.has_tool_calls:
-                logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
+                logger.warning("Memory consolidation: LLM did not call a tool, skipping")
                 return False
 
-            args = response.tool_calls[0].arguments
-            # Some providers return arguments as a JSON string instead of dict
+            tool_call = response.tool_calls[0]
+            args = tool_call.arguments
             if isinstance(args, str):
                 args = json.loads(args)
-            if not isinstance(args, dict):
-                logger.warning("Memory consolidation: unexpected arguments type {}", type(args).__name__)
-                return False
 
-            if entry := args.get("history_entry"):
-                if not isinstance(entry, str):
-                    entry = json.dumps(entry, ensure_ascii=False)
-                self.append_history(entry)
-            if update := args.get("memory_update"):
-                if not isinstance(update, str):
-                    update = json.dumps(update, ensure_ascii=False)
-                if update != current_memory:
+            if tool_call.name == "save_atomic_memories" and vector_store:
+                memories = args.get("memories", [])
+                for m in memories:
+                    await vector_store.add_memory(
+                        user_id=user_id,
+                        session_id=session_id,
+                        content=m["content"],
+                        category=m["category"],
+                        metadata={"importance": m.get("importance", 1.0)}
+                    )
+                logger.info("Memory consolidation (vector): stored {} atomic memories", len(memories))
+            
+            elif tool_call.name == "save_memory":
+                if entry := args.get("history_entry"):
+                    self.append_history(entry)
+                if update := args.get("memory_update"):
                     self.write_long_term(update)
+                logger.info("Memory consolidation (file): updated MEMORY.md/HISTORY.md")
 
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-            logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
             return True
         except Exception:
             logger.exception("Memory consolidation failed")

@@ -113,6 +113,22 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
+    async def embed(self, text: str, model: str | None = None, api_key: str | None = None, api_base: str | None = None) -> list[float]:
+        """
+        Generate an embedding vector for the given text.
+
+        Args:
+            text: The text to embed.
+            model: Optional model identifier (e.g. 'text-embedding-3-small').
+            api_key: Optional API key override.
+            api_base: Optional API base URL override.
+
+        Returns:
+            A list of floats representing the embedding vector.
+        """
+        pass
+
+    @abstractmethod
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass

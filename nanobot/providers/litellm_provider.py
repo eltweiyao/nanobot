@@ -290,6 +290,31 @@ class LiteLLMProvider(LLMProvider):
             thinking_blocks=thinking_blocks,
         )
 
+    async def embed(self, text: str, model: str | None = None, api_key: str | None = None, api_base: str | None = None) -> list[float]:
+        """Generate text embedding using LiteLLM."""
+        model = model or "text-embedding-3-small"
+        
+        # Resolve model name for embeddings too (e.g. for gateways)
+        resolved_model = self._resolve_model(model)
+        
+        kwargs: dict[str, Any] = {
+            "model": resolved_model,
+            "input": [text],
+        }
+
+        # Priority: explicit override > instance default
+        kwargs["api_key"] = api_key or self.api_key
+        kwargs["api_base"] = api_base or self.api_base
+
+        if self.extra_headers:
+            kwargs["extra_headers"] = self.extra_headers
+
+        try:
+            response = await litellm.aembedding(**kwargs)
+            return response.data[0]["embedding"]
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate embedding: {str(e)}") from e
+
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model

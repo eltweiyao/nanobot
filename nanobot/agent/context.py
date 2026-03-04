@@ -10,6 +10,8 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.agent.vector_memory import VectorMemoryStore
+from nanobot.providers.base import LLMProvider
 
 
 class ContextBuilder:
@@ -18,12 +20,25 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, config: Any = None, provider: LLMProvider = None):
         self.workspace = workspace
+        self.config = config
+        self.provider = provider
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        
+        self.vector_memory = None
+        if config and config.memory.enabled and provider:
+            self.vector_memory = VectorMemoryStore(
+                db_url=config.memory.database_url,
+                provider=provider,
+                embedding_model=config.memory.embedding_model,
+                api_key=config.memory.embedding_api_key,
+                api_base=config.memory.embedding_api_base
+            )
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+
+    async def build_system_prompt(self, skill_names: list[str] | None = None, query: str | None = None, session_id: str | None = None, user_id: str = "default") -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -31,9 +46,20 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
+        if self.vector_memory and query:
+            # Semantic search from pgvector
+            memory = await self.vector_memory.query_relevant_memories(
+                user_id=user_id,
+                session_id=session_id,
+                query=query
+            )
+            if memory:
+                parts.append(f"# Relevant Past Context (Memory)\n\n{memory}")
+        else:
+            # Fallback to file-based memory
+            memory = self.memory.get_memory_context()
+            if memory:
+                parts.append(f"# Memory\n\n{memory}")
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -102,7 +128,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         return "\n\n".join(parts) if parts else ""
 
-    def build_messages(
+    async def build_messages(
         self,
         history: list[dict[str, Any]],
         current_message: str,
@@ -122,8 +148,17 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
+        # For pgvector: user_id = channel, session_id = chat_id
+        # This provides both cross-session user memory and per-session focus.
+        system_prompt = await self.build_system_prompt(
+            skill_names=skill_names,
+            query=current_message,
+            session_id=chat_id,
+            user_id=channel or "default"
+        )
+
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": system_prompt},
             *history,
             {"role": "user", "content": merged},
         ]

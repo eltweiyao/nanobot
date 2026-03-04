@@ -293,18 +293,19 @@ class LiteLLMProvider(LLMProvider):
     async def embed(self, text: str, model: str | None = None, api_key: str | None = None, api_base: str | None = None) -> list[float]:
         """Generate text embedding using LiteLLM."""
         model = model or "text-embedding-3-small"
+
+        # If we have a custom api_base and the model has no provider prefix,
+        # LiteLLM needs an explicit provider prefix (like 'openai/') to know how to call it.
+        if api_base and "/" not in model:
+            model = f"openai/{model}"
         
         # Resolve model name for embeddings too (e.g. for gateways)
         resolved_model = self._resolve_model(model)
         
-        kwargs: dict[str, Any] = {
-            "model": resolved_model,
-            "input": [text],
-        }
+        kwargs: dict[str, Any] = {"model": resolved_model, "input": [text], "api_key": api_key or self.api_key,
+                                  "api_base": api_base or self.api_base}
 
         # Priority: explicit override > instance default
-        kwargs["api_key"] = api_key or self.api_key
-        kwargs["api_base"] = api_base or self.api_base
 
         if self.extra_headers:
             kwargs["extra_headers"] = self.extra_headers

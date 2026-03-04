@@ -20,14 +20,14 @@ class VectorMemoryStore:
         db_url: str,
         provider: LLMProvider,
         embedding_model: str = "text-embedding-3-small",
-        api_key: str | None = None,
-        api_base: str | None = None,
+        embedding_api_key: str | None = None,
+        embedding_api_base: str | None = None,
     ):
         self.db_url = db_url
         self.provider = provider
         self.embedding_model = embedding_model
-        self.api_key = api_key
-        self.api_base = api_base
+        self.embedding_api_key = embedding_api_key
+        self.embedding_api_base = embedding_api_base
         self._init_db()
 
     def _init_db(self):
@@ -70,8 +70,8 @@ class VectorMemoryStore:
             embedding = await self.provider.embed(
                 content, 
                 model=self.embedding_model,
-                api_key=self.api_key,
-                api_base=self.api_base
+                api_key=self.embedding_api_key,
+                api_base=self.embedding_api_base
             )
             
             with psycopg2.connect(self.db_url) as conn:
@@ -103,8 +103,8 @@ class VectorMemoryStore:
             query_embedding = await self.provider.embed(
                 query, 
                 model=self.embedding_model,
-                api_key=self.api_key,
-                api_base=self.api_base
+                api_key=self.embedding_api_key,
+                api_base=self.embedding_api_base
             )
             
             # Tier 1: Current Session Memories (Top 3)
@@ -136,7 +136,7 @@ class VectorMemoryStore:
                 prefix = f"[{m['category']}]"
                 formatted.append(f"{prefix} {m['content']}")
                 
-            return "".join(formatted)
+            return "\n".join(formatted)
             
         except Exception as e:
             logger.error(f"Error querying memories: {e}")

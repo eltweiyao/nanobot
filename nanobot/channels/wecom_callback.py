@@ -54,12 +54,14 @@ class WecomCallbackServer:
         @app.get("/wecom/callback")
         async def get_callback(request: Request) -> Response:
             """Handle WeCom verification request."""
-            return await self.channel.handle_callback(request)
+            status_code, body = await self.channel.handle_callback(request)
+            return PlainTextResponse(content=body, status_code=status_code)
 
         @app.post("/wecom/callback")
         async def post_callback(request: Request) -> Response:
             """Handle WeCom message callback."""
-            return await self.channel.handle_callback(request)
+            status_code, body = await self.channel.handle_callback(request)
+            return PlainTextResponse(content=body, status_code=status_code)
 
         config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="warning")
         self._server = uvicorn.Server(config)
@@ -74,3 +76,4 @@ class WecomCallbackServer:
         if self._server:
             self._server.should_exit = True
         logger.info("WeCom callback server stopped")
+

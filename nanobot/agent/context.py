@@ -28,7 +28,7 @@ class ContextBuilder:
         self.skills = SkillsLoader(workspace)
         
         self.vector_memory = None
-        if config and config.memory.enabled and provider:
+        if config and config.memory.enabled:
             self.vector_memory = VectorMemoryStore(
                 db_url=config.memory.database_url,
                 provider=provider,

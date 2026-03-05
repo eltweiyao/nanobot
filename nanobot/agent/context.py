@@ -1,12 +1,14 @@
 """Context builder for assembling agent prompts."""
 
+from __future__ import annotations
+
 import base64
 import mimetypes
 import platform
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader

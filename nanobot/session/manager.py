@@ -47,15 +47,30 @@ class Session:
         unconsolidated = self.messages[self.last_consolidated:]
         sliced = unconsolidated[-max_messages:]
 
-        # Drop leading non-user messages to avoid orphaned tool_result blocks
+        # Drop leading non-user messages to avoid orphaned tool_result blocks.
+        # Strict providers (like Dashscope/OpenAI) fail if a 'tool' message 
+        # is not preceded by an 'assistant' message with 'tool_calls'.
+        # The safest way is to always start the history at a 'user' message.
+        found_start = False
         for i, m in enumerate(sliced):
             if m.get("role") == "user":
                 sliced = sliced[i:]
+                found_start = True
                 break
+        
+        if not found_start:
+            return []
 
         out: list[dict[str, Any]] = []
         for m in sliced:
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
+            # Use .get() without a default to preserve None values. 
+            # Some providers distinguish between None and "".
+            role = m.get("role")
+            content = m.get("content")
+            
+            entry: dict[str, Any] = {"role": role, "content": content}
+            
+            # Carry over tool calling metadata
             for k in ("tool_calls", "tool_call_id", "name"):
                 if k in m:
                     entry[k] = m[k]

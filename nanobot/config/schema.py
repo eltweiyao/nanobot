@@ -325,6 +325,7 @@ class VectorMemoryConfig(Base):
     embedding_model: str = "text-embedding-3-small"
     embedding_api_key: str | None = None
     embedding_api_base: str | None = None
+    limit: int = 5
 
 
 class MCPServerConfig(Base):

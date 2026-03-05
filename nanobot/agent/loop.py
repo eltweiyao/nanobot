@@ -17,7 +17,6 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools.memory import SearchMemoryTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
@@ -29,7 +28,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, VectorMemoryConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
     from nanobot.cron.service import CronService
 
 
@@ -52,6 +51,7 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         workspace: Path,
+        config: Any = None,
         model: str | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
@@ -67,10 +67,10 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
-        vector_memory: VectorMemoryConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
+        self.config = config
         self.channels_config = channels_config
         self.provider = provider
         self.workspace = workspace
@@ -87,7 +87,7 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace, vector_memory=vector_memory, provider=provider)
+        # Removed self.context here, will create per-request in _process_message
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -138,7 +138,6 @@ class AgentLoop:
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
-        self.tools.register(SearchMemoryTool(vector_memory=self.context.vector_memory))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -166,7 +165,7 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron", "search_memory"):
+        for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
@@ -191,6 +190,7 @@ class AgentLoop:
 
     async def _run_agent_loop(
         self,
+        context: ContextBuilder,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
@@ -230,7 +230,7 @@ class AgentLoop:
                     }
                     for tc in response.tool_calls
                 ]
-                messages = self.context.add_assistant_message(
+                messages = context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
@@ -241,7 +241,7 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    messages = self.context.add_tool_result(
+                    messages = context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
@@ -252,7 +252,7 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
-                messages = self.context.add_assistant_message(
+                messages = context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )
@@ -354,12 +354,16 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            
+            context = ContextBuilder(self.workspace, self.config, chat_id)
             history = session.get_history(max_messages=self.memory_window)
-            messages = await self.context.build_messages(
+            messages = await context.build_messages(
                 history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                current_message=msg.content, 
+                provider=self.provider,
+                channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs = await self._run_agent_loop(context, messages)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -370,6 +374,8 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        chat_id = msg.chat_id
+        context = ContextBuilder(self.workspace, self.config, chat_id)
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -429,9 +435,10 @@ class AgentLoop:
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=self.memory_window)
-        initial_messages = await self.context.build_messages(
+        initial_messages = await context.build_messages(
             history=history,
             current_message=msg.content,
+            provider=self.provider,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
         )
@@ -445,7 +452,7 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            context, initial_messages, on_progress=on_progress or _bus_progress,
         )
 
         if final_content is None:
@@ -467,6 +474,7 @@ class AgentLoop:
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
+        from nanobot.agent.context import ContextBuilder
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
@@ -501,16 +509,11 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        # user_id = channel, session_id = chat_id (parsed from session key)
-        parts = session.key.split(":", 1)
-        channel = parts[0] if len(parts) > 1 else "default"
-        chat_id = parts[1] if len(parts) > 1 else session.key
-        
-        return await MemoryStore(self.workspace).consolidate(
+        # Extract chat_id from session key (channel:chat_id)
+        chat_id = session.key.split(":", 1)[-1] if ":" in session.key else "default"
+        return await MemoryStore(self.workspace, self.config, chat_id).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
-            vector_store=self.context.vector_memory,
-            user_id=channel, session_id=chat_id
         )
 
     async def process_direct(

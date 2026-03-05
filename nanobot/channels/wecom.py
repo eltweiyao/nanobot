@@ -7,12 +7,13 @@ import hashlib
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from datetime import datetime
 from typing import Any
 
 import httpx
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import WecomConfig
@@ -288,20 +289,20 @@ class WecomChannel(BaseChannel):
                     logger.warning("WeCom message from unauthorized user: {}", from_user)
                     return
 
-            inbound_msg = {
-                "channel": "wecom",
-                "chat_id": from_user,
-                "author": from_user,
-                "content": content,
-                "timestamp": create_time,
-                "message_id": msg_id,
-                "metadata": {
+            inbound_msg = InboundMessage(
+                channel="wecom",
+                chat_id=from_user,
+                sender_id=from_user,
+                content=content or "",
+                timestamp=datetime.fromtimestamp(create_time),
+                metadata={
                     "to_user": to_agent,
                     "agent_id": self.config.agent_id,
                     "msg_type": msg_type,
-                    "event": event
+                    "event": event,
+                    "msg_id": msg_id
                 }
-            }
+            )
 
             await self.bus.publish_inbound(inbound_msg)
             

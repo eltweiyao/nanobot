@@ -13,6 +13,7 @@ from nanobot.utils.helpers import ensure_dir
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
     from nanobot.session.manager import Session
+    from nanobot.agent.vector_memory import VectorMemoryStore
 
 
 _SAVE_MEMORY_TOOL = [
@@ -34,35 +35,22 @@ _SAVE_MEMORY_TOOL = [
                         "description": "Full updated long-term memory as markdown. Include all existing "
                         "facts plus new ones. Return unchanged if nothing new.",
                     },
-                },
-                "required": ["history_entry", "memory_update"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_atomic_memories",
-            "description": "Save extracted atomic facts and preferences to vector memory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "memories": {
+                    "atomic_facts": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "content": {"type": "string", "description": "The fact or preference text."},
-                                "category": {"type": "string", "enum": ["fact", "preference", "task"], "description": "The type of memory."},
-                                "importance": {"type": "number", "minimum": 0, "maximum": 1, "description": "Subjective importance (0-1)."}
+                                "content": {"type": "string", "description": "A single atomic fact or preference."},
+                                "category": {"type": "string", "enum": ["fact", "preference"], "description": "Type of memory."},
                             },
-                            "required": ["content", "category"]
-                        }
-                    }
+                            "required": ["content", "category"],
+                        },
+                        "description": "List of new atomic facts or preferences extracted from the conversation.",
+                    },
                 },
-                "required": ["memories"]
-            }
-        }
+                "required": ["history_entry", "memory_update"],
+            },
+        },
     }
 ]
 
@@ -99,11 +87,11 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         memory_window: int = 50,
-        vector_store: Any = None,
+        vector_store: VectorMemoryStore | None = None,
         user_id: str = "default",
         session_id: str | None = None,
     ) -> bool:
-        """Consolidate old messages into persistent memory via LLM tool call.
+        """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
 
         If vector_store is provided, it extracts atomic facts. Otherwise, it updates MEMORY.md.
         Returns True on success, False on failure.
@@ -123,128 +111,72 @@ class MemoryStore:
                 return True
             logger.info("Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count)
 
-        # Process in chunks of 50 messages to avoid context overflow and keep LLM focused
-        CHUNK_SIZE = 50
-        chunks = [old_messages[i:i + CHUNK_SIZE] for i in range(0, len(old_messages), CHUNK_SIZE)]
-        
-        success = True
-        for idx, chunk in enumerate(chunks):
-            if len(chunks) > 1:
-                logger.info("Consolidating chunk {}/{} ({} messages)", idx + 1, len(chunks), len(chunk))
-            
-            lines = []
-            for m in chunk:
-                if not m.get("content"):
-                    continue
-                tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-                lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
-
-            if not lines:
+        lines = []
+        for m in old_messages:
+            if not m.get("content"):
                 continue
+            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
+            lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
 
-            if vector_store:
-                # Vector-based consolidation (Atomic Facts)
-                prompt = f"""Process this conversation segment and extract new atomic facts or user preferences.
-Focus on information that is worth remembering long-term.
-You MUST call 'save_atomic_memories' to store your findings.
+        current_memory = self.read_long_term()
+        
+        prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
 
-## Conversation Segment to Process
-{chr(10).join(lines)}"""
-                tool_choice = {"type": "function", "function": {"name": "save_atomic_memories"}}
-            else:
-                # File-based consolidation (Markdown)
-                current_memory = self.read_long_term()
-                prompt = f"""Process this conversation segment and call the 'save_memory' tool with your consolidation.
-
-## Current Long-term Memory (for context)
+## Current Long-term Memory
 {current_memory or "(empty)"}
 
-## Conversation Segment to Process
+## Conversation to Process
 {chr(10).join(lines)}"""
-                tool_choice = {"type": "function", "function": {"name": "save_memory"}}
 
-            try:
-                response = await provider.chat(
-                    messages=[
-                        {"role": "system", "content": "You are a precise memory consolidation agent. You MUST use the provided tools to save information. Even if no new facts are found, call 'save_atomic_memories' with an empty list."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    tools=_SAVE_MEMORY_TOOL,
-                    tool_choice=tool_choice,
-                    model=model,
-                )
+        if vector_store:
+            prompt += "\n\nAlso extract any new atomic facts or user preferences and include them in atomic_facts."
 
-                # Fallback: if no tool calls but we have content, try to find JSON in the content
-                if not response.has_tool_calls and response.content:
-                    import json_repair
-                    # Try to find something that looks like a JSON array or object in the text
-                    try:
-                        potential_json = response.content
-                        if "```json" in potential_json:
-                            potential_json = potential_json.split("```json")[1].split("```")[0].strip()
-                        elif "```" in potential_json:
-                            potential_json = potential_json.split("```")[1].split("```")[0].strip()
-                        
-                        parsed = json_repair.loads(potential_json)
-                        if isinstance(parsed, dict):
-                            if vector_store and "memories" in parsed:
-                                memories = parsed["memories"]
-                                for m in memories:
-                                    await vector_store.add_memory(
-                                        user_id=user_id, session_id=session_id,
-                                        content=m["content"], category=m["category"],
-                                        metadata={"importance": m.get("importance", 1.0)}
-                                    )
-                                logger.info("Chunk {}: extracted {} memories from text fallback", idx + 1, len(memories))
-                                continue
-                            elif not vector_store and ("history_entry" in parsed or "memory_update" in parsed):
-                                if entry := parsed.get("history_entry"):
-                                    self.append_history(entry)
-                                if update := parsed.get("memory_update"):
-                                    self.write_long_term(update)
-                                logger.info("Chunk {}: extracted markdown memory from text fallback", idx + 1)
-                                continue
-                    except Exception:
-                        pass
+        try:
+            response = await provider.chat(
+                messages=[
+                    {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_SAVE_MEMORY_TOOL,
+                model=model,
+            )
 
-                if not response.has_tool_calls:
-                    logger.warning("Memory consolidation (chunk {}): LLM did not call a tool and fallback parsing failed", idx + 1)
-                    success = False
-                    continue
+            if not response.has_tool_calls:
+                logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
+                return False
 
-                for tool_call in response.tool_calls:
-                    args = tool_call.arguments
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            logger.error("Failed to parse tool arguments as JSON: {}", args)
-                            continue
+            args = response.tool_calls[0].arguments
+            # Some providers return arguments as a JSON string instead of dict
+            if isinstance(args, str):
+                args = json.loads(args)
+            if not isinstance(args, dict):
+                logger.warning("Memory consolidation: unexpected arguments type {}", type(args).__name__)
+                return False
 
-                    if tool_call.name == "save_atomic_memories" and vector_store:
-                        memories = args.get("memories", [])
-                        for m in memories:
-                            await vector_store.add_memory(
-                                user_id=user_id,
-                                session_id=session_id,
-                                content=m["content"],
-                                category=m["category"],
-                                metadata={"importance": m.get("importance", 1.0)}
-                            )
-                        logger.info("Chunk {}: stored {} atomic memories in pgvector", idx + 1, len(memories))
-                    
-                    elif tool_call.name == "save_memory":
-                        if entry := args.get("history_entry"):
-                            self.append_history(entry)
-                        if update := args.get("memory_update"):
-                            self.write_long_term(update)
-                        logger.info("Chunk {}: updated MEMORY.md/HISTORY.md", idx + 1)
+            if entry := args.get("history_entry"):
+                if not isinstance(entry, str):
+                    entry = json.dumps(entry, ensure_ascii=False)
+                self.append_history(entry)
+            
+            if update := args.get("memory_update"):
+                if not isinstance(update, str):
+                    update = json.dumps(update, ensure_ascii=False)
+                if update != current_memory:
+                    self.write_long_term(update)
 
-            except Exception:
-                logger.exception("Memory consolidation failed for chunk {}", idx + 1)
-                success = False
+            if vector_store and (facts := args.get("atomic_facts")):
+                for fact in facts:
+                    if isinstance(fact, dict) and "content" in fact:
+                        await vector_store.add_memory(
+                            user_id=user_id,
+                            content=fact["content"],
+                            session_id=session_id if fact.get("category") != "preference" else None,
+                            category=fact.get("category", "fact")
+                        )
 
-        if success:
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-        
-        return success
+            logger.info("Memory consolidation done: {} messages, last_consolidated={}", len(session.messages), session.last_consolidated)
+            return True
+        except Exception:
+            logger.exception("Memory consolidation failed")
+            return False

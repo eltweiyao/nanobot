@@ -129,7 +129,7 @@ class VectorMemoryStore:
             # Combine and format
             all_memories = session_memories + global_memories
             if not all_memories:
-                return "No relevant past memories found."
+                return ""
             
             formatted = []
             for m in all_memories:
@@ -140,7 +140,7 @@ class VectorMemoryStore:
             
         except Exception as e:
             logger.error(f"Error querying memories: {e}")
-            return "Error retrieving memories."
+            return ""
 
     def _search(
         self,
@@ -162,9 +162,10 @@ class VectorMemoryStore:
             query += " AND session_id = %s"
             params.append(session_id)
         elif session_id is None and category != "preference":
-            # If we're searching globally but not for preferences, we might want to exclude current session
-            # but for simplicity in this tiered approach, we'll just allow overlaps or manage via logic above.
-            pass
+            # If we're searching globally and it's not a specific preference, 
+            # we might want to include only those with session_id NULL or just everything for that user.
+            # For now, let's say NULL session_id means global.
+            query += " AND session_id IS NULL"
             
         if category:
             query += " AND category = %s"

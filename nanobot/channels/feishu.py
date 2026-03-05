@@ -16,29 +16,9 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import FeishuConfig
 
-try:
-    import lark_oapi as lark
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
-        CreateImageRequest,
-        CreateImageRequestBody,
-        CreateMessageReactionRequest,
-        CreateMessageReactionRequestBody,
-        DeleteMessageReactionRequest,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-        Emoji,
-        GetMessageResourceRequest,
-        P2ImMessageReceiveV1,
-        ReplyMessageRequest,
-        ReplyMessageRequestBody,
-    )
-    FEISHU_AVAILABLE = True
-except ImportError:
-    FEISHU_AVAILABLE = False
-    lark = None
-    Emoji = None
+import importlib.util
+
+FEISHU_AVAILABLE = importlib.util.find_spec("lark_oapi") is not None
 
 # Message type display mapping
 MSG_TYPE_MAP = {
@@ -284,6 +264,7 @@ class FeishuChannel(BaseChannel):
             logger.error("Feishu app_id and app_secret not configured")
             return
 
+        import lark_oapi as lark
         self._running = True
         self._loop = asyncio.get_running_loop()
 
@@ -341,9 +322,10 @@ class FeishuChannel(BaseChannel):
         """
         self._running = False
         logger.info("Feishu bot stopped")
-    
+
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> str | None:
-        """Sync helper for adding reaction (runs in thread pool). Returns reaction_id."""
+        """Sync helper for adding reaction (runs in thread pool)."""
+        from lark_oapi.api.im.v1 import CreateMessageReactionRequest, CreateMessageReactionRequestBody, Emoji
         try:
             request = CreateMessageReactionRequest.builder() \
                 .message_id(message_id) \
@@ -368,12 +350,14 @@ class FeishuChannel(BaseChannel):
 
     def _remove_reaction_sync(self, message_id: str, reaction_id: str) -> None:
         """Sync helper for removing reaction (runs in thread pool)."""
+        from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
         try:
             request = DeleteMessageReactionRequest.builder() \
                 .message_id(message_id) \
                 .reaction_id(reaction_id) \
                 .build()
-            
+
             response = self._client.im.v1.message_reaction.delete(request)
             if not response.success():
                 logger.warning("Failed to remove reaction: code={}, msg={}", response.code, response.msg)
@@ -383,12 +367,12 @@ class FeishuChannel(BaseChannel):
     async def _add_reaction(self, message_id: str, emoji_type: str | None = None) -> str | None:
         """
         Add a reaction emoji to a message (non-blocking).
-        
-        Common emoji types: THUMBSUP, OK, DONE, OnIt, HEART
+
+        Common emoji types: THUMBSUP, OK, EYES, DONE, OnIt, HEART
         """
         if not self._client or not Emoji:
             return None
-        
+
         emoji_type = emoji_type or self.config.react_emoji
         loop = asyncio.get_running_loop()
         reaction_id = await loop.run_in_executor(None, self._add_reaction_sync, message_id, emoji_type)
@@ -400,12 +384,12 @@ class FeishuChannel(BaseChannel):
         """Remove the reaction associated with a message."""
         if not self._client:
             return
-        
+
         reaction_id = self._reaction_ids.pop(message_id, None)
         if reaction_id:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._remove_reaction_sync, message_id, reaction_id)
-    
+
     # Regex to match markdown tables (header + separator + data rows)
     _TABLE_RE = re.compile(
         r"((?:^[ \t]*\|.+\|[ \t]*\n)(?:^[ \t]*\|[-:\s|]+\|[ \t]*\n)(?:^[ \t]*\|.+\|[ \t]*\n?)+)",
@@ -492,6 +476,7 @@ class FeishuChannel(BaseChannel):
 
     def _upload_image_sync(self, file_path: str) -> str | None:
         """Upload an image to Feishu and return the image_key."""
+        from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
         try:
             with open(file_path, "rb") as f:
                 request = CreateImageRequest.builder() \
@@ -515,6 +500,7 @@ class FeishuChannel(BaseChannel):
 
     def _upload_file_sync(self, file_path: str) -> str | None:
         """Upload a file to Feishu and return the file_key."""
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
         ext = os.path.splitext(file_path)[1].lower()
         file_type = self._FILE_TYPE_MAP.get(ext, "stream")
         file_name = os.path.basename(file_path)
@@ -542,6 +528,7 @@ class FeishuChannel(BaseChannel):
 
     def _download_image_sync(self, message_id: str, image_key: str) -> tuple[bytes | None, str | None]:
         """Download an image from Feishu message by message_id and image_key."""
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest
         try:
             request = GetMessageResourceRequest.builder() \
                 .message_id(message_id) \
@@ -566,6 +553,13 @@ class FeishuChannel(BaseChannel):
         self, message_id: str, file_key: str, resource_type: str = "file"
     ) -> tuple[bytes | None, str | None]:
         """Download a file/audio/media from a Feishu message by message_id and file_key."""
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest
+
+        # Feishu API only accepts 'image' or 'file' as type parameter
+        # Convert 'audio' to 'file' for API compatibility
+        if resource_type == "audio":
+            resource_type = "file"
+
         try:
             request = (
                 GetMessageResourceRequest.builder()
@@ -634,6 +628,7 @@ class FeishuChannel(BaseChannel):
 
     def _send_message_sync(self, receive_id_type: str, receive_id: str, msg_type: str, content: str, reply_to: str | None = None) -> bool:
         """Send a single message (text/image/file/interactive) or reply to an existing one."""
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, ReplyMessageRequest, ReplyMessageRequestBody
         try:
             if reply_to:
                 # Reply to an existing message (this will automatically reference the parent)
@@ -658,7 +653,7 @@ class FeishuChannel(BaseChannel):
                         .build()
                     ).build()
                 response = self._client.im.v1.message.create(request)
-            
+
             if not response.success():
                 logger.error(
                     "Failed to send/reply Feishu {} message: code={}, msg={}, log_id={}",
@@ -714,7 +709,7 @@ class FeishuChannel(BaseChannel):
                     receive_id_type, msg.chat_id, "interactive", json.dumps(card, ensure_ascii=False),
                     reply_to
                 )
-            
+
             # If this is the final response (not progress update), remove the 'processing' reaction
             if not msg.metadata.get("_progress") and reply_to:
                 await self._remove_reaction(reply_to)

@@ -123,75 +123,95 @@ class MemoryStore:
                 return True
             logger.info("Memory consolidation: {} to consolidate, {} keep", len(old_messages), keep_count)
 
-        lines = []
-        for m in old_messages:
-            if not m.get("content"):
+        # Process in chunks of 50 messages to avoid context overflow and keep LLM focused
+        CHUNK_SIZE = 50
+        chunks = [old_messages[i:i + CHUNK_SIZE] for i in range(0, len(old_messages), CHUNK_SIZE)]
+        
+        success = True
+        for idx, chunk in enumerate(chunks):
+            if len(chunks) > 1:
+                logger.info("Consolidating chunk {}/{} ({} messages)", idx + 1, len(chunks), len(chunk))
+            
+            lines = []
+            for m in chunk:
+                if not m.get("content"):
+                    continue
+                tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
+                lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
+
+            if not lines:
                 continue
-            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-            lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
 
-        if vector_store:
-            # Vector-based consolidation (Atomic Facts)
-            prompt = f"""Process this conversation and extract new atomic facts or user preferences.
+            if vector_store:
+                # Vector-based consolidation (Atomic Facts)
+                prompt = f"""Process this conversation segment and extract new atomic facts or user preferences.
 Focus on information that is worth remembering long-term.
-Call 'save_atomic_memories' with your findings.
+You MUST call 'save_atomic_memories' to store your findings.
 
-## Conversation to Process
+## Conversation Segment to Process
 {chr(10).join(lines)}"""
-            tool_choice = {"type": "function", "function": {"name": "save_atomic_memories"}}
-        else:
-            # File-based consolidation (Markdown)
-            current_memory = self.read_long_term()
-            prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
+                tool_choice = {"type": "function", "function": {"name": "save_atomic_memories"}}
+            else:
+                # File-based consolidation (Markdown)
+                current_memory = self.read_long_term()
+                prompt = f"""Process this conversation segment and call the 'save_memory' tool with your consolidation.
 
-## Current Long-term Memory
+## Current Long-term Memory (for context)
 {current_memory or "(empty)"}
 
-## Conversation to Process
+## Conversation Segment to Process
 {chr(10).join(lines)}"""
-            tool_choice = {"type": "function", "function": {"name": "save_memory"}}
+                tool_choice = {"type": "function", "function": {"name": "save_memory"}}
 
-        try:
-            response = await provider.chat(
-                messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent."},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_SAVE_MEMORY_TOOL,
-                tool_choice=tool_choice,
-                model=model,
-            )
+            try:
+                response = await provider.chat(
+                    messages=[
+                        {"role": "system", "content": "You are a precise memory consolidation agent. You always use the provided tools to save extracted information."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    tools=_SAVE_MEMORY_TOOL,
+                    tool_choice=tool_choice,
+                    model=model,
+                )
 
-            if not response.has_tool_calls:
-                logger.warning("Memory consolidation: LLM did not call a tool, skipping")
-                return False
+                if not response.has_tool_calls:
+                    logger.warning("Memory consolidation (chunk {}): LLM did not call a tool, skipping this chunk", idx + 1)
+                    success = False
+                    continue
 
-            tool_call = response.tool_calls[0]
-            args = tool_call.arguments
-            if isinstance(args, str):
-                args = json.loads(args)
+                for tool_call in response.tool_calls:
+                    args = tool_call.arguments
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            logger.error("Failed to parse tool arguments as JSON: {}", args)
+                            continue
 
-            if tool_call.name == "save_atomic_memories" and vector_store:
-                memories = args.get("memories", [])
-                for m in memories:
-                    await vector_store.add_memory(
-                        user_id=user_id,
-                        session_id=session_id,
-                        content=m["content"],
-                        category=m["category"],
-                        metadata={"importance": m.get("importance", 1.0)}
-                    )
-                logger.info("Memory consolidation (vector): stored {} atomic memories", len(memories))
-            
-            elif tool_call.name == "save_memory":
-                if entry := args.get("history_entry"):
-                    self.append_history(entry)
-                if update := args.get("memory_update"):
-                    self.write_long_term(update)
-                logger.info("Memory consolidation (file): updated MEMORY.md/HISTORY.md")
+                    if tool_call.name == "save_atomic_memories" and vector_store:
+                        memories = args.get("memories", [])
+                        for m in memories:
+                            await vector_store.add_memory(
+                                user_id=user_id,
+                                session_id=session_id,
+                                content=m["content"],
+                                category=m["category"],
+                                metadata={"importance": m.get("importance", 1.0)}
+                            )
+                        logger.info("Chunk {}: stored {} atomic memories in pgvector", idx + 1, len(memories))
+                    
+                    elif tool_call.name == "save_memory":
+                        if entry := args.get("history_entry"):
+                            self.append_history(entry)
+                        if update := args.get("memory_update"):
+                            self.write_long_term(update)
+                        logger.info("Chunk {}: updated MEMORY.md/HISTORY.md", idx + 1)
 
+            except Exception:
+                logger.exception("Memory consolidation failed for chunk {}", idx + 1)
+                success = False
+
+        if success:
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-            return True
-        except Exception:
-            logger.exception("Memory consolidation failed")
-            return False
+        
+        return success

@@ -23,11 +23,11 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path, vector_config: VectorMemoryConfig | None = None, user_id: str = "default"):
+    def __init__(self, workspace: Path, vector_memory_config: VectorMemoryConfig | None = None, user_id: str = "default"):
         self.workspace = workspace
-        self.vector_config = vector_config
+        self.vector_memory_config = vector_memory_config
         self.user_id = user_id
-        self.memory = MemoryStore(workspace, vector_config, user_id)
+        self.memory = MemoryStore(workspace, vector_memory_config, user_id)
         self.skills = SkillsLoader(workspace)
 
     async def build_system_prompt(

@@ -28,7 +28,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, VectorMemoryConfig
     from nanobot.cron.service import CronService
 
 
@@ -51,7 +51,6 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         workspace: Path,
-        config: Any = None,
         model: str | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
@@ -67,10 +66,10 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        vector_memory_config: VectorMemoryConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
-        self.config = config
         self.channels_config = channels_config
         self.provider = provider
         self.workspace = workspace
@@ -86,6 +85,7 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.vector_memory_config = vector_memory_config
 
         # Removed self.context here, will create per-request in _process_message
         self.sessions = session_manager or SessionManager(workspace)
@@ -355,7 +355,7 @@ class AgentLoop:
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             
-            context = ContextBuilder(self.workspace, self.config, chat_id)
+            context = ContextBuilder(self.workspace, self.vector_memory_config, chat_id)
             history = session.get_history(max_messages=self.memory_window)
             messages = await context.build_messages(
                 history=history,
@@ -375,7 +375,7 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
         chat_id = msg.chat_id
-        context = ContextBuilder(self.workspace, self.config, chat_id)
+        context = ContextBuilder(self.workspace, self.vector_memory_config, chat_id)
 
         # Slash commands
         cmd = msg.content.strip().lower()

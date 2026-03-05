@@ -6,7 +6,7 @@ import platform
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader

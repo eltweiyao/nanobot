@@ -191,9 +191,10 @@ class ChannelManager:
         if "wecom" in self.channels:
             try:
                 from nanobot.channels.wecom_callback import WecomCallbackServer
-                wecom_server = WecomCallbackServer(self.channels["wecom"], port=18790)
+                port = self.config.gateway.port or 18790
+                wecom_server = WecomCallbackServer(self.channels["wecom"], port=port)
                 wecom_callback_task = asyncio.create_task(wecom_server.start())
-                logger.info("WeCom callback server started on port 18790")
+                logger.info("WeCom callback server started on port {}", port)
             except Exception as e:
                 logger.warning("Failed to start WeCom callback server: {}", e)
 

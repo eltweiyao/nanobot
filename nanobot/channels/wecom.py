@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import time
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from typing import Any
 
@@ -56,18 +56,6 @@ class WecomChannel(BaseChannel):
         self._access_token: str | None = None
         self._token_expires_at: float = 0
         self._processed_message_ids: OrderedDict[str, None] = OrderedDict()
-        self._aes_cipher: Any = None
-        
-        if self.config.encoding_aes_key and WECOM_CRYPTO_AVAILABLE:
-            self._init_aes_cipher()
-
-    def _init_aes_cipher(self) -> None:
-        """Initialize AES cipher for message encryption/decryption."""
-        try:
-            aes_key = base64.b64decode(self.config.encoding_aes_key + "=")
-            self._aes_cipher = AES.new(aes_key, AES.MODE_CBC, aes_key[:16])
-        except Exception as e:
-            logger.error("Failed to initialize AES cipher: {}", e)
 
     async def start(self) -> None:
         """Start the WeCom bot."""
@@ -80,7 +68,6 @@ class WecomChannel(BaseChannel):
         
         logger.info("WeCom bot started")
         logger.info("Callback URL: http://<gateway-host>:18790{}", self.callback_path)
-        logger.info("Configure this URL in WeCom Admin Panel -> App -> Callback Settings")
 
         while self._running:
             await asyncio.sleep(1)
@@ -170,28 +157,44 @@ class WecomChannel(BaseChannel):
             # Verification request (GET)
             if echostr:
                 if self._verify_signature(msg_signature, timestamp, nonce, echostr):
-                    decrypted = self._decrypt_msg(echostr) if self._aes_cipher else echostr
-                    return 200, decrypted
+                    decrypted_echostr = self._decrypt_msg(echostr)
+                    return 200, decrypted_echostr
                 else:
+                    logger.warning("WeCom callback signature verification failed (GET)")
                     return 403, "Invalid signature"
 
             # Message callback (POST)
             body = await request.body()
-            if self._verify_signature(msg_signature, timestamp, nonce, body.decode()):
-                decrypt_body = self._decrypt_msg(body.decode()) if self._aes_cipher else body.decode()
-                message_data = json.loads(decrypt_body)
+            if not body:
+                return 400, "Empty body"
+            
+            # Parse XML body
+            root = ET.fromstring(body)
+            encrypt_node = root.find("Encrypt")
+            if encrypt_node is None or not encrypt_node.text:
+                logger.error("WeCom callback missing Encrypt node")
+                return 400, "Invalid XML"
+            
+            encrypt_msg = encrypt_node.text
+            
+            if self._verify_signature(msg_signature, timestamp, nonce, encrypt_msg):
+                decrypted_xml = self._decrypt_msg(encrypt_msg)
+                if not decrypted_xml:
+                    return 500, "Decryption failed"
                 
+                message_data = self._parse_xml(decrypted_xml)
                 await self._process_message(message_data)
                 
                 return 200, "success"
             else:
+                logger.warning("WeCom callback signature verification failed (POST)")
                 return 403, "Invalid signature"
 
         except Exception as e:
             logger.error("Error handling WeCom callback: {}", e)
             return 500, "Internal error"
 
-    def _verify_signature(self, msg_signature: str, timestamp: str, nonce: str, body: str) -> bool:
+    def _verify_signature(self, msg_signature: str, timestamp: str, nonce: str, data: str) -> bool:
         """Verify WeCom request signature."""
         try:
             token = self.config.token
@@ -199,7 +202,7 @@ class WecomChannel(BaseChannel):
                 logger.warning("WeCom token not configured, skipping signature verification")
                 return True
 
-            sorted_list = sorted([token, timestamp, nonce, body])
+            sorted_list = sorted([token, timestamp, nonce, data])
             concatenated = "".join(sorted_list)
             signature = hashlib.sha1(concatenated.encode()).hexdigest()
             
@@ -210,24 +213,48 @@ class WecomChannel(BaseChannel):
 
     def _decrypt_msg(self, encrypted_msg: str) -> str:
         """Decrypt WeCom message."""
-        if not self._aes_cipher or not WECOM_CRYPTO_AVAILABLE:
-            return encrypted_msg
+        if not WECOM_CRYPTO_AVAILABLE:
+            logger.error("AES decryption requested but pycryptodome not installed")
+            return ""
 
         try:
+            aes_key = base64.b64decode(self.config.encoding_aes_key + "=")
+            iv = aes_key[:16]
+            cipher = AES.new(aes_key, AES.MODE_CBC, iv)
+            
             encrypted = base64.b64decode(encrypted_msg)
-            decrypted = self._aes_cipher.decrypt(encrypted)
+            decrypted = cipher.decrypt(encrypted)
             
-            padding = decrypted[-1]
-            decrypted = decrypted[:-padding]
+            # PKCS7 unpadding
+            padding_len = decrypted[-1]
+            if padding_len < 1 or padding_len > 32:
+                padding_len = 0
+            decrypted = decrypted[:-padding_len]
             
-            msg_content = decrypted[16:]
-            msg_len = int.from_bytes(msg_content[:4], byteorder="big")
-            message = msg_content[4:4+msg_len].decode("utf-8")
+            # WeCom message structure:
+            # random(16 bytes) + msg_len(4 bytes) + msg + corp_id
+            content = decrypted[16:]
+            msg_len = int.from_bytes(content[:4], byteorder="big")
+            message = content[4:4+msg_len].decode("utf-8")
+            
+            # Optional: verify corp_id
+            received_corp_id = content[4+msg_len:].decode("utf-8")
+            if received_corp_id != self.config.corp_id:
+                logger.warning("WeCom corp_id mismatch: expected {}, got {}", self.config.corp_id, received_corp_id)
             
             return message
         except Exception as e:
             logger.error("Message decryption error: {}", e)
-            return encrypted_msg
+            return ""
+
+    def _parse_xml(self, xml_str: str) -> dict[str, str]:
+        """Parse WeCom XML message into a flat dictionary."""
+        try:
+            root = ET.fromstring(xml_str)
+            return {child.tag: child.text for child in root if child.text is not None}
+        except Exception as e:
+            logger.error("Error parsing WeCom XML: {}", e)
+            return {}
 
     async def _process_message(self, message_data: dict) -> None:
         """Process incoming WeCom message."""
@@ -235,27 +262,31 @@ class WecomChannel(BaseChannel):
             msg_type = message_data.get("MsgType", "")
             event = message_data.get("Event", "")
             
+            # Support text messages and specific events
             if msg_type != "text" and msg_type != "event":
                 return
             
-            if event and event not in ("enter_agent", "click", "view"):
+            if msg_type == "event" and event not in ("enter_agent", "click", "view"):
                 return
 
             from_user = message_data.get("FromUserName", "")
             to_agent = message_data.get("ToUserName", "")
             content = message_data.get("Content", "")
             msg_id = message_data.get("MsgId", str(time.time()))
-            create_time = message_data.get("CreateTime", int(time.time()))
+            create_time = int(message_data.get("CreateTime", time.time()))
 
+            # Deduplication
             if msg_id in self._processed_message_ids:
                 return
             self._processed_message_ids[msg_id] = None
             if len(self._processed_message_ids) > MAX_SEEN_MESSAGE_IDS:
                 self._processed_message_ids.popitem(last=False)
 
+            # Access control
             if self.config.allow_from and from_user not in self.config.allow_from:
-                logger.warning("WeCom message from unauthorized user: {}", from_user)
-                return
+                if "*" not in self.config.allow_from:
+                    logger.warning("WeCom message from unauthorized user: {}", from_user)
+                    return
 
             inbound_msg = {
                 "channel": "wecom",
@@ -265,7 +296,7 @@ class WecomChannel(BaseChannel):
                 "timestamp": create_time,
                 "message_id": msg_id,
                 "metadata": {
-                    "corp_id": to_agent,
+                    "to_user": to_agent,
                     "agent_id": self.config.agent_id,
                     "msg_type": msg_type,
                     "event": event
@@ -274,7 +305,7 @@ class WecomChannel(BaseChannel):
 
             await self.bus.publish_inbound(inbound_msg)
             
-            logger.debug("WeCom message received from {}: {}", from_user, content[:50])
+            logger.debug("WeCom message received from {}: {}", from_user, (content or "")[:50])
 
         except Exception as e:
             logger.error("Error processing WeCom message: {}", e)

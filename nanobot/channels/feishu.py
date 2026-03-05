@@ -717,6 +717,7 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error("Error sending Feishu message: {}", e)
 
+    from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
         Sync handler for incoming messages (called from WebSocket thread).

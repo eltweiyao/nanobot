@@ -18,6 +18,38 @@ if TYPE_CHECKING:
     from nanobot.config.schema import VectorMemoryConfig
 
 
+_SAVE_MEMORY_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": "Save the memory consolidation result to persistent storage.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "history_entry": {
+                        "type": "string",
+                        "description": "A paragraph (2-5 sentences) summarizing key events/decisions/topics. "
+                        "Start with [YYYY-MM-DD HH:MM]. Include detail useful for grep search.",
+                    },
+                    "memory_update": {
+                        "type": "string",
+                        "description": "Full updated long-term memory as markdown. Include all existing "
+                        "facts plus new ones. Return unchanged if nothing new.",
+                    },
+                    "atomic_facts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: list of standalone, important facts extracted from this conversation.",
+                    },
+                },
+                "required": ["history_entry", "memory_update"],
+            },
+        },
+    }
+]
+
+
 class PgVectorStore:
     """Backend for pgvector-based memory storage."""
 

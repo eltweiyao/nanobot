@@ -166,7 +166,7 @@ You MUST call 'save_atomic_memories' to store your findings.
             try:
                 response = await provider.chat(
                     messages=[
-                        {"role": "system", "content": "You are a precise memory consolidation agent. You always use the provided tools to save extracted information."},
+                        {"role": "system", "content": "You are a precise memory consolidation agent. You MUST use the provided tools to save information. Even if no new facts are found, call 'save_atomic_memories' with an empty list."},
                         {"role": "user", "content": prompt},
                     ],
                     tools=_SAVE_MEMORY_TOOL,
@@ -174,8 +174,41 @@ You MUST call 'save_atomic_memories' to store your findings.
                     model=model,
                 )
 
+                # Fallback: if no tool calls but we have content, try to find JSON in the content
+                if not response.has_tool_calls and response.content:
+                    import json_repair
+                    # Try to find something that looks like a JSON array or object in the text
+                    try:
+                        potential_json = response.content
+                        if "```json" in potential_json:
+                            potential_json = potential_json.split("```json")[1].split("```")[0].strip()
+                        elif "```" in potential_json:
+                            potential_json = potential_json.split("```")[1].split("```")[0].strip()
+                        
+                        parsed = json_repair.loads(potential_json)
+                        if isinstance(parsed, dict):
+                            if vector_store and "memories" in parsed:
+                                memories = parsed["memories"]
+                                for m in memories:
+                                    await vector_store.add_memory(
+                                        user_id=user_id, session_id=session_id,
+                                        content=m["content"], category=m["category"],
+                                        metadata={"importance": m.get("importance", 1.0)}
+                                    )
+                                logger.info("Chunk {}: extracted {} memories from text fallback", idx + 1, len(memories))
+                                continue
+                            elif not vector_store and ("history_entry" in parsed or "memory_update" in parsed):
+                                if entry := parsed.get("history_entry"):
+                                    self.append_history(entry)
+                                if update := parsed.get("memory_update"):
+                                    self.write_long_term(update)
+                                logger.info("Chunk {}: extracted markdown memory from text fallback", idx + 1)
+                                continue
+                    except Exception:
+                        pass
+
                 if not response.has_tool_calls:
-                    logger.warning("Memory consolidation (chunk {}): LLM did not call a tool, skipping this chunk", idx + 1)
+                    logger.warning("Memory consolidation (chunk {}): LLM did not call a tool and fallback parsing failed", idx + 1)
                     success = False
                     continue
 

@@ -355,7 +355,7 @@ class AgentLoop:
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             
-            context = ContextBuilder(self.workspace, self.vector_memory_config, chat_id)
+            context = ContextBuilder(self.workspace, self.vector_memory_config, key)
             history = session.get_history(max_messages=self.memory_window)
             messages = await context.build_messages(
                 history=history,
@@ -374,8 +374,8 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
-        chat_id = msg.chat_id
-        context = ContextBuilder(self.workspace, self.vector_memory_config, chat_id)
+        context = ContextBuilder(self.workspace, self.vector_memory_config, key)
+
 
         # Slash commands
         cmd = msg.content.strip().lower()
@@ -509,9 +509,8 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        # Extract chat_id from session key (channel:chat_id)
-        chat_id = session.key.split(":", 1)[-1] if ":" in session.key else "default"
-        return await MemoryStore(self.workspace, self.vector_memory_config, chat_id).consolidate(
+        # Use full session.key (channel:chat_id) as the isolated user_id
+        return await MemoryStore(self.workspace, self.vector_memory_config, session.key).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
         )

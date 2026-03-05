@@ -51,7 +51,7 @@ _SAVE_MEMORY_TOOL = [
 
 
 class PgVectorStore:
-    """Backend for pgvector-based memory storage."""
+    """Backend for pgvector-based memory storage with robust transaction handling."""
 
     def __init__(self, db_url: str, user_id: str):
         self.db_url = db_url
@@ -67,46 +67,47 @@ class PgVectorStore:
         """Search for relevant facts using cosine similarity."""
         try:
             conn = self._get_conn()
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT content FROM agent_facts "
-                    "WHERE user_id = %s "
-                    "ORDER BY embedding <=> %s::vector "
-                    "LIMIT %s",
-                    (self.user_id, embedding, limit),
-                )
-                return [row["content"] for row in cur.fetchall()]
+            with conn: # Handles transactions automatically
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT content FROM agent_facts "
+                        "WHERE user_id = %s "
+                        "ORDER BY embedding <=> %s::vector "
+                        "LIMIT %s",
+                        (self.user_id, embedding, limit),
+                    )
+                    return [row["content"] for row in cur.fetchall()]
         except Exception:
-            logger.exception("Failed to search facts in pgvector")
+            logger.exception("Failed to search facts for user {}", self.user_id)
             return []
 
     def add_fact(self, content: str, embedding: list[float], category: str = "general"):
-        """Add or update an atomic fact."""
+        """Add an atomic fact."""
         try:
             conn = self._get_conn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO agent_facts (user_id, content, embedding, category) "
-                    "VALUES (%s, %s, %s::vector, %s)",
-                    (self.user_id, content, embedding, category),
-                )
-            conn.commit()
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO agent_facts (user_id, content, embedding, category) "
+                        "VALUES (%s, %s, %s::vector, %s)",
+                        (self.user_id, content, embedding, category),
+                    )
         except Exception:
-            logger.exception("Failed to add fact to pgvector")
+            logger.exception("Failed to add fact for user {}", self.user_id)
 
     def add_event(self, summary: str, embedding: list[float], session_id: str | None = None):
         """Add a conversation event summary."""
         try:
             conn = self._get_conn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO agent_events (user_id, summary, embedding, session_id) "
-                    "VALUES (%s, %s, %s::vector, %s)",
-                    (self.user_id, summary, embedding, session_id),
-                )
-            conn.commit()
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO agent_events (user_id, summary, embedding, session_id) "
+                        "VALUES (%s, %s, %s::vector, %s)",
+                        (self.user_id, summary, embedding, session_id),
+                    )
         except Exception:
-            logger.exception("Failed to add event to pgvector")
+            logger.exception("Failed to add event for user {}", self.user_id)
 
 
 class MemoryStore:
@@ -114,16 +115,17 @@ class MemoryStore:
 
     def __init__(self, workspace: Path, vector_config: VectorMemoryConfig | None = None, user_id: str = "default"):
         self.workspace = workspace
-        self.user_id = user_id
+        self.user_id = user_id # Should be session_key (channel:chat_id)
         self.vector_config = vector_config
         
         # Isolate file storage by user_id
         self.memory_root = ensure_dir(workspace / "memory")
+        # Sanitize user_id for filename
+        safe_user_id = user_id.replace(":", "_")
         if user_id == "default":
             self.memory_dir = self.memory_root
         else:
-            # Create a subfolder for the specific user (e.g. workspace/memory/user_123/)
-            self.memory_dir = ensure_dir(self.memory_root / user_id)
+            self.memory_dir = ensure_dir(self.memory_root / safe_user_id)
             
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
@@ -181,6 +183,9 @@ class MemoryStore:
         memory_window: int = 50,
     ) -> bool:
         """Consolidate old messages into persistent storage via LLM tool call."""
+        # 1. Skip fact extraction for system channel
+        is_system = session.key.startswith("system:")
+        
         if archive_all:
             old_messages = session.messages
             keep_count = 0
@@ -204,6 +209,13 @@ class MemoryStore:
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
 
         current_memory = self.read_long_term()
+        
+        system_instr = "You are a memory consolidation agent."
+        if is_system:
+            system_instr += " This is a system log. Just provide a brief summary for history_entry. Do NOT extract atomic_facts."
+        else:
+            system_instr += " Identify any new atomic facts for long-term storage."
+
         prompt = f"""Process this conversation and call the save_memory tool with your consolidation.
 
 ## Current Long-term Memory
@@ -215,7 +227,7 @@ class MemoryStore:
         try:
             response = await provider.chat(
                 messages=[
-                    {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation. Identify any new atomic facts for long-term storage."},
+                    {"role": "system", "content": system_instr},
                     {"role": "user", "content": prompt},
                 ],
                 tools=_SAVE_MEMORY_TOOL,
@@ -223,17 +235,15 @@ class MemoryStore:
             )
 
             if not response.has_tool_calls:
-                logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
                 return False
 
             args = response.tool_calls[0].arguments
             if isinstance(args, str):
                 args = json.loads(args)
 
-            # 1. Update History (Legacy)
+            # 1. Update History (Legacy & Vector Event)
             if entry := args.get("history_entry"):
                 self.append_history(entry)
-                # Also save to vector if enabled
                 if self.vector_store and self.vector_config:
                     embedding = await provider.embed(
                         entry, 
@@ -243,25 +253,26 @@ class MemoryStore:
                     )
                     self.vector_store.add_event(entry, embedding, session_id=session.key)
 
-            # 2. Update Long-term (Legacy File)
-            if update := args.get("memory_update"):
-                if update != current_memory:
-                    self.write_long_term(update)
+            # 2. Update Long-term Markdown (Skip if system)
+            if not is_system:
+                if update := args.get("memory_update"):
+                    if update != current_memory:
+                        self.write_long_term(update)
 
-            # 3. Save Atomic Facts (New Vector feature)
-            if self.vector_store and (facts := args.get("atomic_facts")) and self.vector_config:
-                for fact in facts:
-                    embedding = await provider.embed(
-                        fact, 
-                        model=self.vector_config.embedding_model,
-                        api_key=self.vector_config.embedding_api_key,
-                        api_base=self.vector_config.embedding_api_base
-                    )
-                    self.vector_store.add_fact(fact, embedding)
+                # 3. Save Atomic Facts (Skip if system)
+                if self.vector_store and (facts := args.get("atomic_facts")) and self.vector_config:
+                    for fact in facts:
+                        embedding = await provider.embed(
+                            fact,
+                            model=self.vector_config.embedding_model,
+                            api_key=self.vector_config.embedding_api_key,
+                            api_base=self.vector_config.embedding_api_base
+                        )
+                        self.vector_store.add_fact(fact, embedding)
 
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
-            logger.info("Memory consolidation done: {} messages", len(old_messages))
+            logger.info("Memory consolidated for {}. Facts saved: {}", session.key, not is_system)
             return True
         except Exception:
-            logger.exception("Memory consolidation failed")
+            logger.exception("Memory consolidation failed for {}", session.key)
             return False

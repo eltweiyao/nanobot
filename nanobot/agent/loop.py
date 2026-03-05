@@ -511,7 +511,7 @@ class AgentLoop:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
         # Extract chat_id from session key (channel:chat_id)
         chat_id = session.key.split(":", 1)[-1] if ":" in session.key else "default"
-        return await MemoryStore(self.workspace, self.config, chat_id).consolidate(
+        return await MemoryStore(self.workspace, self.vector_memory_config, chat_id).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
         )

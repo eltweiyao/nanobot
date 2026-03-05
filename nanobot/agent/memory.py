@@ -241,7 +241,7 @@ class MemoryStore:
                         api_key=self.vector_config.embedding_api_key,
                         api_base=self.vector_config.embedding_api_base
                     )
-                    self.vector_store.add_event(entry, embedding, session_id=session.session_id)
+                    self.vector_store.add_event(entry, embedding, session_id=session.key)
 
             # 2. Update Long-term (Legacy File)
             if update := args.get("memory_update"):

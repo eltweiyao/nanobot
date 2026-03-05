@@ -110,13 +110,21 @@ class PgVectorStore:
 
 
 class MemoryStore:
-    """Two-layer memory: Vector/File facts + History log."""
+    """Two-layer memory: Vector/File facts + History log, with multi-user isolation."""
 
     def __init__(self, workspace: Path, vector_config: VectorMemoryConfig | None = None, user_id: str = "default"):
         self.workspace = workspace
         self.user_id = user_id
         self.vector_config = vector_config
-        self.memory_dir = ensure_dir(workspace / "memory")
+        
+        # Isolate file storage by user_id
+        self.memory_root = ensure_dir(workspace / "memory")
+        if user_id == "default":
+            self.memory_dir = self.memory_root
+        else:
+            # Create a subfolder for the specific user (e.g. workspace/memory/user_123/)
+            self.memory_dir = ensure_dir(self.memory_root / user_id)
+            
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
         

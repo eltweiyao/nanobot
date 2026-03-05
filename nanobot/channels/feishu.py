@@ -370,6 +370,8 @@ class FeishuChannel(BaseChannel):
 
         Common emoji types: THUMBSUP, OK, EYES, DONE, OnIt, HEART
         """
+        from lark_oapi.api.im.v1 import Emoji
+
         if not self._client or not Emoji:
             return None
 

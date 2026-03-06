@@ -236,14 +236,31 @@ class AgentLoop:
                     thinking_blocks=response.thinking_blocks,
                 )
 
+                all_media_paths = []
+
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    raw_result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Extract content and media using normalized helper
+                    from nanobot.utils.helpers import normalize_tool_result
+                    content, media_paths = normalize_tool_result(raw_result)
+                    
+                    if media_paths:
+                        all_media_paths.extend(media_paths)
+
                     messages = context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                        messages, tool_call.id, tool_call.name, content
                     )
+
+                if all_media_paths:
+                    # Append all collected media as a single user message AFTER all tool results
+                    messages.append({
+                        "role": "user",
+                        "content": context._build_user_content("Attached generated media for review:", all_media_paths)
+                    })
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can

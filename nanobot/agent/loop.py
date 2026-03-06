@@ -236,31 +236,34 @@ class AgentLoop:
                     thinking_blocks=response.thinking_blocks,
                 )
 
-                all_media_paths = []
-
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    raw_result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
 
-                    # Extract content and media using normalized helper
-                    from nanobot.utils.helpers import normalize_tool_result
-                    content, media_paths = normalize_tool_result(raw_result)
-                    
-                    if media_paths:
-                        all_media_paths.extend(media_paths)
+                    media_path_match = None
+                    if isinstance(result, str):
+                        # Support both __IMAGE_PATH__ and __MEDIA_PATH__ for backward compatibility
+                        m = re.search(r"__MEDIA_PATH__:\s*([^\s]+)", result)
+                        if m:
+                            media_path_match = m.group(1)
+                            result = result.replace(m.group(0), "").strip() or "Media captured."
+                    elif isinstance(result, dict):
+                        if "_media_path" in result:
+                            media_path_match = result.pop("_media_path")
+                        if media_path_match and not result:
+                            result = "Media captured."
 
-                    messages = context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, content
+                    messages = self.context.add_tool_result(
+                        messages, tool_call.id, tool_call.name, result
                     )
 
-                if all_media_paths:
-                    # Append all collected media as a single user message AFTER all tool results
-                    messages.append({
-                        "role": "user",
-                        "content": context._build_user_content("Attached generated media for review:", all_media_paths)
-                    })
+                    if media_path_match:
+                        messages.append({
+                            "role": "user",
+                            "content": self.context._build_user_content(f"Media captured by {tool_call.name}:", [media_path_match])
+                        })
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can
@@ -269,7 +272,7 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
-                messages = context.add_assistant_message(
+                messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )

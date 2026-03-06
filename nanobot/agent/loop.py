@@ -255,7 +255,7 @@ class AgentLoop:
                         if media_path_match and not result:
                             result = "Media captured."
 
-                    messages = self.context.add_tool_result(
+                    messages = context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
 

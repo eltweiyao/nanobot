@@ -262,7 +262,7 @@ class AgentLoop:
                     if media_path_match:
                         messages.append({
                             "role": "user",
-                            "content": self.context._build_user_content(f"Media captured by {tool_call.name}:", [media_path_match])
+                            "content": context._build_user_content(f"Media captured by {tool_call.name}:", [media_path_match])
                         })
             else:
                 clean = self._strip_think(response.content)
@@ -272,7 +272,7 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
-                messages = self.context.add_assistant_message(
+                messages = context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )

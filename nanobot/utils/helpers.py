@@ -6,21 +6,23 @@ from pathlib import Path
 from typing import Any
 
 
+def detect_image_mime(data: bytes) -> str | None:
+    """Detect image MIME type from magic bytes, ignoring file extension."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def ensure_dir(path: Path) -> Path:
     """Ensure directory exists, return it."""
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def get_data_path() -> Path:
-    """~/.nanobot data directory."""
-    return ensure_dir(Path.home() / ".nanobot")
-
-
-def get_workspace_path(workspace: str | None = None) -> Path:
-    """Resolve and ensure workspace path. Defaults to ~/.nanobot/workspace."""
-    path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
-    return ensure_dir(path)
 
 
 def timestamp() -> str:
@@ -35,10 +37,42 @@ def safe_filename(name: str) -> str:
     return _UNSAFE_CHARS.sub("_", name).strip()
 
 
+def split_message(content: str, max_len: int = 2000) -> list[str]:
+    """
+    Split content into chunks within max_len, preferring line breaks.
+
+    Args:
+        content: The text content to split.
+        max_len: Maximum length per chunk (default 2000 for Discord compatibility).
+
+    Returns:
+        List of message chunks, each within max_len.
+    """
+    if not content:
+        return []
+    if len(content) <= max_len:
+        return [content]
+    chunks: list[str] = []
+    while content:
+        if len(content) <= max_len:
+            chunks.append(content)
+            break
+        cut = content[:max_len]
+        # Try to break at newline first, then space, then hard break
+        pos = cut.rfind('\n')
+        if pos <= 0:
+            pos = cut.rfind(' ')
+        if pos <= 0:
+            pos = max_len
+        chunks.append(content[:pos])
+        content = content[pos:].lstrip()
+    return chunks
+
+
 def normalize_tool_result(result: Any) -> tuple[Any, list[str]]:
     """
     Normalize various tool result formats into (content, media_paths).
-    
+
     Supported formats:
     - str with __MEDIA_PATH__: /path
     - dict with _media_path or _media_paths keys
@@ -55,7 +89,7 @@ def normalize_tool_result(result: Any) -> tuple[Any, list[str]]:
             media_paths = [m_paths]
         elif isinstance(m_paths, list):
             media_paths = m_paths
-        
+
         # 2. If result is now empty or just has 'status', normalize content
         if not result or (len(result) == 1 and "status" in result):
             content = "Resource captured."

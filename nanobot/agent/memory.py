@@ -117,7 +117,7 @@ class MemoryStore:
         self.workspace = workspace
         self.user_id = user_id # Should be session_key (channel:chat_id)
         self.vector_config = vector_config
-        
+
         # Isolate file storage by user_id
         self.memory_root = ensure_dir(workspace / "memory")
         # Sanitize user_id for filename
@@ -126,10 +126,10 @@ class MemoryStore:
             self.memory_dir = self.memory_root
         else:
             self.memory_dir = ensure_dir(self.memory_root / safe_user_id)
-            
+
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
-        
+
         self.vector_store = None
         if vector_config and vector_config.enabled:
             self.vector_store = PgVectorStore(vector_config.db_url, user_id)
@@ -155,7 +155,7 @@ class MemoryStore:
         if self.vector_store and provider and query and self.vector_config:
             try:
                 embedding = await provider.embed(
-                    query, 
+                    query,
                     model=self.vector_config.embedding_model,
                     api_key=self.vector_config.embedding_api_key,
                     api_base=self.vector_config.embedding_api_base
@@ -185,7 +185,7 @@ class MemoryStore:
         """Consolidate old messages into persistent storage via LLM tool call."""
         # 1. Skip fact extraction for system channel
         is_system = session.key.startswith("system:")
-        
+
         if archive_all:
             old_messages = session.messages
             keep_count = 0
@@ -209,7 +209,7 @@ class MemoryStore:
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}")
 
         current_memory = self.read_long_term()
-        
+
         system_instr = "You are a memory consolidation agent."
         if is_system:
             system_instr += " This is a system log. Just provide a brief summary for history_entry. Do NOT extract atomic_facts."
@@ -240,13 +240,23 @@ class MemoryStore:
             args = response.tool_calls[0].arguments
             if isinstance(args, str):
                 args = json.loads(args)
+            # Some providers return arguments as a list (handle edge case)
+            if isinstance(args, list):
+                if args and isinstance(args[0], dict):
+                    args = args[0]
+                else:
+                    logger.warning("Memory consolidation: unexpected arguments as empty or non-dict list")
+                    return False
+            if not isinstance(args, dict):
+                logger.warning("Memory consolidation: unexpected arguments type {}", type(args).__name__)
+                return False
 
             # 1. Update History (Legacy & Vector Event)
             if entry := args.get("history_entry"):
                 self.append_history(entry)
                 if self.vector_store and self.vector_config:
                     embedding = await provider.embed(
-                        entry, 
+                        entry,
                         model=self.vector_config.embedding_model,
                         api_key=self.vector_config.embedding_api_key,
                         api_base=self.vector_config.embedding_api_base
@@ -258,17 +268,6 @@ class MemoryStore:
                 if update := args.get("memory_update"):
                     if update != current_memory:
                         self.write_long_term(update)
-
-                # 3. Save Atomic Facts (Skip if system)
-                if self.vector_store and (facts := args.get("atomic_facts")) and self.vector_config:
-                    for fact in facts:
-                        embedding = await provider.embed(
-                            fact,
-                            model=self.vector_config.embedding_model,
-                            api_key=self.vector_config.embedding_api_key,
-                            api_base=self.vector_config.embedding_api_base
-                        )
-                        self.vector_store.add_fact(fact, embedding)
 
             session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
             logger.info("Memory consolidated for {}. Facts saved: {}", session.key, not is_system)
